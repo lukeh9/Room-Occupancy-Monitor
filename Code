@@ -1,0 +1,762 @@
+#include <Wire.h>
+#include <LiquidCrystal_I2C.h>
+#include <Keypad.h>
+#include <SharpIR.h>
+#include <Adafruit_SPITFT_Macros.h>
+#include <gfxfont.h>
+#include <Adafruit_SPITFT.h>
+#include <Adafruit_GrayOLED.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_NeoMatrix.h>
+#include <Adafruit_NeoPixel.h>
+
+
+
+
+
+
+
+
+#ifndef PSTR
+#define PSTR //make Arduino Due happy
+#endif // !PSTR
+
+
+
+
+
+
+
+
+#define PIN 13
+//#define IRPin1 A0
+//#define IRPin2 A1
+//#define model 20150
+
+
+
+
+
+
+
+
+LiquidCrystal_I2C lcd(0x27,16,2);
+
+
+
+
+
+
+
+
+Adafruit_NeoMatrix matrix = Adafruit_NeoMatrix(16, 16, PIN, NEO_MATRIX_TOP + NEO_MATRIX_LEFT + NEO_MATRIX_COLUMNS + NEO_MATRIX_ZIGZAG, NEO_GRB + NEO_KHZ800);
+
+
+
+
+
+
+
+
+const uint16_t colors[] = {
+matrix.Color(1, 150, 32), matrix.Color(230, 30, 0), matrix.Color(0, 179, 1795)
+};
+
+
+
+
+
+
+
+
+enum FSM {
+begin,  // 0
+awaiting_max,  // 1
+display_current_instructions,  // 2
+awaiting_current,  // 3
+stored_currentkey,  // 4
+sensing,  // 5
+};
+
+
+
+
+
+
+
+
+const byte ROWS = 4;
+const byte COLS = 4;
+
+
+
+
+
+
+
+
+char hexaKeys[ROWS][COLS] = {
+{'1', '2', '3', 'A'},
+{'4', '5', '6', 'B'},
+{'7', '8', '9', 'C'},
+{'*', '0', '#', 'D'}
+};
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+byte rowPins[ROWS] = {9, 8, 7, 6};
+byte colPins[COLS] = {5, 4, 3, 2};
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Keypad keypad = Keypad(makeKeymap(hexaKeys), rowPins, colPins, ROWS, COLS);
+
+
+
+
+
+
+
+
+int distance1, distance2;
+SharpIR sensor1 ( SharpIR::GP2Y0A02YK0F, A0 );
+SharpIR sensor2 ( SharpIR::GP2Y0A02YK0F, A1 );
+
+
+
+
+
+
+
+
+int maxoccupancy, currentoccupancy, doordistance1, doordistance2, doordistance;
+bool lastblocked1 = false, lastblocked2 = false;
+bool incount = false, outcount = false;
+
+
+
+
+
+
+
+
+char maxinput[20];
+int maxcount = 0;
+int cursormax = 0;
+
+
+
+
+
+
+
+
+char currentinput[20];
+int currentcount = 0;
+int cursorcurrent = 0;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+// create a function that displays current occupancy on led matrix
+//void displayoccupancy(int current){
+//char displayText[4];
+//itoa(current, displayText, 10);
+//matrix.fillScreen(0);
+//matrix.setCursor(2, 4); // Set the cursor to the beginning
+//matrix.print(displayText);
+//matrix.show();
+//delay(1000); // You can adjust the delay to control how long the text is displayed before it's cleared.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+//}
+
+
+
+
+
+
+
+
+int previousOccupancy = 0;
+
+
+
+
+
+
+
+
+// create a function that checks current vs max occupancy and alerts if max occupancy is reached
+void checkoccupancy(int current, int max){
+if (current <= max && current >= 0 )
+{
+ char displayText[4];
+ itoa(current, displayText, 10);
+ //matrix.fillScreen(0);
+ //matrix.setCursor(2, 4); // Set the cursor to the beginning
+ //matrix.print(displayText);
+ // matrix.show();
+ //delay(1000); // You can adjust the delay to control how long the text is displayed before it's cleared.
+ //if (current != previousOccupancy) {
+   matrix.setTextSize(1);
+   matrix.setTextColor(0x07E0);
+   //matrix.Color(230, 30, 0);
+   matrix.fillScreen(0);
+   matrix.setCursor(2, 4);
+   matrix.print(displayText);
+   matrix.show();
+   previousOccupancy = current;
+ //}
+}
+else
+{
+ char displayText[]= "X";
+ matrix.fillScreen(0);
+ matrix.setTextSize(2);
+ matrix.setTextColor(matrix.Color(230, 30, 0));
+ matrix.setCursor(3, 1); // Set the cursor to the beginning
+ matrix.Color(230, 30, 0);
+ matrix.print(displayText);
+ matrix.show();
+ delay(1000); // You can adjust the delay to control how long the text is displayed before it's cleared.
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+void setup() {
+Serial.begin(9600);
+lcd.init();
+lcd.backlight();
+Serial.begin(9600);
+Serial.println();
+Serial.println();
+Serial.println("Starting room occupancy app...");
+
+
+
+
+
+
+
+
+matrix.begin();
+matrix.setTextWrap(false);
+matrix.setBrightness(40);
+matrix.setTextColor(colors[0]);
+pinMode(PIN, OUTPUT);
+digitalWrite(PIN, HIGH);
+
+
+
+
+//Serial.begin(9600);
+//pinMode(A0, OUTPUT); // Set the pin to OUTPUT mode
+//digitalWrite(A0, LOW); // Turn off the sensor by setting the pin to LOW
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+void loop() {
+static FSM state = begin;
+char key = keypad.getKey();
+if (state == begin){
+ // display instructions for max input
+ matrix.fillScreen(0);
+ matrix.show();
+ lcd.setCursor(0,0);
+ lcd.print("Enter max occupancy and press 'A': ");
+ for (int positioncounter = 0; positioncounter < 40; positioncounter++){
+   lcd.scrollDisplayLeft();
+   delay(300);
+ }
+ state = awaiting_max;
+} else if (state == awaiting_max){
+ if (key == 'A'){
+   state = display_current_instructions;
+   maxoccupancy = atoi(maxinput);
+   lcd.clear();
+   lcd.println("Max occupancy:");
+   lcd.setCursor(0,1);
+   lcd.println(maxoccupancy);
+   delay(1500);
+ }
+ else if (key=='1'||key=='2'||key=='3'||key=='4'||key=='5'||key=='6'||key=='7'||key=='8'||key=='9'||key=='0'){
+   maxinput[maxcount] = key;
+   maxcount++;
+   lcd.setCursor(cursormax,1);
+   lcd.print(key);
+   cursormax++;
+ }
+}
+else if (state == display_current_instructions){
+ lcd.clear();
+ lcd.setCursor(0,0);
+ lcd.print("Enter current occupancy and press 'A': ");
+ for (int positioncounter = 0; positioncounter < 40; positioncounter++){
+   lcd.scrollDisplayLeft();
+   delay(300);
+ }
+ state = awaiting_current;
+} else if (state == awaiting_current){
+ if (key == 'A'){
+   state = sensing;
+   //doordistance1 = sensor1.getDistance();
+   //doordistance2 = sensor2.getDistance();
+   //if (doordistance1 > doordistance2){
+   // doordistance = doordistance2;
+   //} else doordistance = doordistance1;
+   doordistance = 35;
+   currentoccupancy = atoi(currentinput);
+   //initialcurrent = currentocupancy;
+   lcd.clear();
+   lcd.println("Sensing");
+   lcd.setCursor(0,1);
+   lcd.println("occupancy");
+   //displayoccupancy(currentoccupancy);
+   checkoccupancy(currentoccupancy, maxoccupancy);
+ } else if (key=='1'||key=='2'||key=='3'||key=='4'||key=='5'||key=='6'||key=='7'||key=='8'||key=='9'||key=='0'){
+   currentinput[currentcount] = key;
+   currentcount++;
+   lcd.setCursor(cursorcurrent,1);
+   lcd.print(key);
+   cursorcurrent++;
+ }
+} else if (state == sensing){
+ // sense and display occupancy
+ //let sensor1 be inside the room and sensor2 is outside
+ distance1 = sensor1.getDistance();
+ distance2 = sensor2.getDistance();
+ Serial.print("distance1: ");
+ Serial.print(distance1);
+ Serial.print(", ");
+ Serial.print("distance2: ");
+ Serial.println(distance2);
+
+
+
+
+
+
+
+
+ // Check if sensors detect a human
+ bool didSensorOneDetectAHuman = (distance1 < (doordistance)) && distance1 > 0;
+ bool didSensorTwoDetectAHuman = (distance2 < (doordistance)) && distance2 > 0;
+
+
+
+
+
+
+ // Check if someone is entering or leaving
+ //if (didSensorOneDetectAHuman || didSensorTwoDetectAHuman){
+  //if (didSensorOneDetectAHuman && didSensorTwoDetectAHuman){
+     //currentoccupancy = currentoccupancy;
+  if (didSensorOneDetectAHuman){ //sensor closer to the inside senses change first ie someone is leaving
+    if (lastblocked1 == false && incount == false){ //sensor wasn't blocked in the last loop ie no continuously counting, and the same person hasn't passed the outside sensor
+       currentoccupancy--; //decrement occupancy
+       outcount = true; //person leaving has been counted
+     }
+     lastblocked1 = true; //show that inside sensor was blocked
+   }
+  else if (didSensorTwoDetectAHuman){ //sensor outside senses change first ie someone is entering
+    if (lastblocked2 == false && outcount == false){ //sensor wasn't blocked in the last loop ie no continuously counting, and the same person hasn't passed the inside sensor
+         currentoccupancy++; //increment occupancy
+         incount = true; //person entering has been counted
+       }
+     lastblocked2 = true; //show that outside sensor was blocked
+   }
+    else {
+     lastblocked1 = false; //sensor isn't being blocked when there is no change in distance detected
+     lastblocked2 = false;
+     //Serial.print("distance1 < (doordistance1-5): ");
+     //Serial.println(distance1 < (doordistance1-5));
+ }
+
+
+ digitalWrite(PIN, LOW);
+ delay(25);
+ digitalWrite(PIN, HIGH);
+
+
+
+
+
+
+
+
+ if (distance1 > doordistance && distance2 > doordistance){ //when it is back to the initial condiitons ie no one is leaving or entering
+   outcount = false; //person leaving has been counted
+   incount = false; //person entering has been counted
+ }
+
+
+ if (currentoccupancy < 0){
+   currentoccupancy = 0;
+ }
+
+
+
+
+
+
+
+
+ checkoccupancy(currentoccupancy, maxoccupancy);
+ //delay(50);
+
+
+
+
+
+
+
+
+} else if (key == 'C'){
+ state = begin;
+}
+
+
+
+
+
+
+
+
+  Serial.print("state: ");
+ Serial.println(state);
+ Serial.print("currentoccupancy: ");
+ Serial.println(currentoccupancy);
+ //Serial.print("door distance : ");
+ //Serial.print(doordistance);
+ //Serial.print(", ");
+ //Serial.print("distance1: ");
+ //Serial.print(distance1);
+ //Serial.print(", ");
+ //Serial.print("distance2: ");
+ //Serial.println(distance2);
+
+
+
+
+
+
+
+
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Sensor test:
+#include <SharpIR.h>
+
+
+//Create a new instance of the library
+//Call the sensor "sensor"
+//The model of the sensor is "GP2YA41SK0F"
+//The sensor output pin is attached to the pin A0
+SharpIR sensor( SharpIR::GP2Y0A02YK0F, A0 );
+
+
+void setup()
+{
+ Serial.begin( 9600 ); //Enable the serial comunication
+}
+
+
+void loop()
+{
+ int distance = sensor.getDistance(); //Calculate the distance in centimeters and store the value in a variable
+
+
+ Serial.println( distance ); //Print the value to the serial monitor
+
+
+ delay(500);
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+THEIR CODE
+
+
+#include <SharpIR.h>
+#include <Wire.h>
+#include <LiquidCrystal_I2C.h>
+
+
+
+
+
+
+
+
+#define IR A0
+#define IR2 A1
+#define model 20150
+int occ = 0;
+
+
+
+
+
+
+
+
+LiquidCrystal_I2C lcd(0x27,20 ,4);
+SharpIR sensor1 = SharpIR(IR, model);
+SharpIR sensor2 = SharpIR(IR2, model);
+
+
+
+
+
+
+
+
+void setup() {
+  Serial.begin(9600);
+  lcd.init();
+  lcd.clear();        
+  lcd.backlight();      
+
+
+
+
+
+
+
+
+  delay(10000);
+  int disconst=sensor1.distance();  //after 10 seconds of turning on, set initial measured distance to fixed distance
+  int distmax = 30; // set a distance that will trigger a response if recorded under
+  lcd.setCursor(2,0);  
+  lcd.print("Occupancy: ");
+ 
+ 
+}
+
+
+
+
+
+
+
+
+void loop() {
+     
+    delay(500);  
+  unsigned long startTime=millis();  
+  int dis=sensor1.distance();  //measured distance
+  int dis2 = sensor2.distance();
+  int maxocc= 10;
+ 
+
+
+
+
+
+
+
+
+ if (dis<30) {
+  occ=occ+1;
+  delay(1000);
+ } //Trigger: adding an occupant
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  Serial.print("Distance 1: ");  
+  Serial.println(dis);
+  Serial.print("distance 2:");
+  Serial.println(dis2);
+
+
+
+
+ 
+  unsigned long endTime=millis()-startTime;  //time delay between measurements
+
+
+
+
+
+
+
+
+ Serial.println(endTime);
+
+
+
+
+
+
+
+
+       lcd.setCursor(2,0);  
+  lcd.print("Occupancy: ");
+  lcd.setCursor(2,1);
+  lcd.print(occ);
+}
+
+
+ 
+
