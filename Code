@@ -751,12 +751,8 @@ void loop() {
 
 
 
-       lcd.setCursor(2,0);  
+  lcd.setCursor(2,0);  
   lcd.print("Occupancy: ");
   lcd.setCursor(2,1);
   lcd.print(occ);
 }
-
-
- 
-
